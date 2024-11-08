@@ -1,9 +1,9 @@
 use burn::tensor::{
-    activation::relu, backend::Backend, BasicOps, Bool, Element, Float, Int, Numeric, Tensor,
+    activation::relu, backend::Backend, BasicOps, Element, Numeric, Tensor,
     TensorKind,
 };
+use burn::tensor::cast::ToElement;
 
-use num_traits::ToPrimitive;
 
 pub fn tensor_max_scalar<B: Backend, const D: usize>(x: Tensor<B, D>, max: f64) -> Tensor<B, D> {
     relu(x.sub_scalar(max)).add_scalar(max)
@@ -27,7 +27,7 @@ pub fn tensor_log10<B: Backend, const D: usize>(x: Tensor<B, D>) -> Tensor<B, D>
 }
 
 pub fn all_zeros<B: Backend, const D: usize>(x: Tensor<B, D>) -> bool {
-    x.abs().max().into_scalar().to_f64().unwrap() == 0.0
+    x.abs().max().into_scalar().to_f64() == 0.0
 }
 
 pub fn _10pow<B: Backend, const D: usize>(x: Tensor<B, D>) -> Tensor<B, D> {
@@ -43,6 +43,6 @@ where
     <K as BasicOps<B>>::Elem: Element,
 {
     let len = x.dims()[dim];
-    let indices = -Tensor::arange_device(0..len, &x.device()) + (len - 1) as i64;
+    let indices = -Tensor::arange(0..len as i64, &x.device()) + (len as i64 - 1);
     x.select(dim, indices)
 }

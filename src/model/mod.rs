@@ -6,9 +6,7 @@ use burn::{
     config::Config,
     module::{Module, Param},
     nn::{
-        self,
-        conv::{Conv1d, Conv1dConfig, Conv1dRecord},
-        PaddingConfig1d,
+        self, conv::{Conv1d, Conv1dConfig}, Gelu, PaddingConfig1d
     },
     tensor::{activation::softmax, backend::Backend, module::embedding, Distribution, Int, Tensor},
 };
@@ -81,25 +79,28 @@ pub struct TextDecoderConfig {
 
 impl TextDecoderConfig {
     pub fn init<B: Backend>(&self) -> TextDecoder<B> {
-        let token_embedding = Tensor::random(
+        let device = B::Device::default();
+        let token_embedding = Param::from_tensor(Tensor::random(
             [self.n_vocab, self.n_text_state],
             Distribution::Normal(0.0, 1.0),
-        )
-        .into();
-        let positional_embedding = Tensor::random(
+            &device,
+        ));
+
+        let positional_embedding = Param::from_tensor(Tensor::random(
             [self.n_text_ctx, self.n_text_state],
             Distribution::Normal(0.0, 1.0),
-        )
-        .into();
+            &device,
+        ));
+
         let blocks: Vec<_> = (0..self.n_text_layer)
             .into_iter()
             .map(|_| {
                 ResidualDecoderAttentionBlockConfig::new(self.n_text_state, self.n_text_head).init()
             })
             .collect();
-        let ln = nn::LayerNormConfig::new(self.n_text_state).init();
+        let ln = nn::LayerNormConfig::new(self.n_text_state).init(&device);
 
-        let mask = attn_decoder_mask(self.n_text_ctx).into();
+        let mask = Param::from_tensor(attn_decoder_mask(self.n_text_ctx));
 
         let n_vocab = self.n_vocab;
         let n_text_ctx = self.n_text_ctx;
@@ -129,7 +130,7 @@ pub struct TextDecoder<B: Backend> {
 
 impl<B: Backend> TextDecoder<B> {
     fn forward(&self, x: Tensor<B, 2, Int>, xa: Tensor<B, 3>) -> Tensor<B, 3> {
-        let [n_batch, seq_len] = x.dims();
+        let [_n_batch, seq_len] = x.dims();
 
         assert!(
             seq_len <= self.n_text_ctx,
@@ -172,15 +173,16 @@ pub struct AudioEncoderConfig {
 
 impl AudioEncoderConfig {
     pub fn init<B: Backend>(&self) -> AudioEncoder<B> {
+        let device = B::Device::default();
         let conv1 = Conv1dConfig::new(self.n_mels, self.n_audio_state, 3)
             .with_padding(PaddingConfig1d::Explicit(1))
-            .init();
-        let gelu1 = nn::GELU::new();
+            .init(&device);
+        let gelu1 = Gelu::new();
         let conv2 = Conv1dConfig::new(self.n_audio_state, self.n_audio_state, 3)
             .with_padding(PaddingConfig1d::Explicit(1))
             .with_stride(2)
-            .init();
-        let gelu2 = nn::GELU::new();
+            .init(&device);
+        let gelu2 = Gelu::new();
         let blocks: Vec<_> = (0..self.n_audio_layer)
             .into_iter()
             .map(|_| {
@@ -188,12 +190,12 @@ impl AudioEncoderConfig {
                     .init()
             })
             .collect();
-        let ln_post = nn::LayerNormConfig::new(self.n_audio_state).init();
-        let positional_embedding = Tensor::random(
+        let ln_post = nn::LayerNormConfig::new(self.n_audio_state).init(&device);
+        let positional_embedding = Param::from_tensor(Tensor::random(
             [self.n_audio_ctx, self.n_audio_state],
             Distribution::Normal(0.0, 1.0),
-        )
-        .into();
+            &B::Device::default(),
+        ));
         let n_mels = self.n_mels;
         let n_audio_ctx = self.n_audio_ctx;
 
@@ -214,9 +216,9 @@ impl AudioEncoderConfig {
 #[derive(Module, Debug)]
 pub struct AudioEncoder<B: Backend> {
     conv1: Conv1d<B>,
-    gelu1: nn::GELU,
+    gelu1: Gelu,
     conv2: Conv1d<B>,
-    gelu2: nn::GELU,
+    gelu2: Gelu,
     blocks: Vec<ResidualEncoderAttentionBlock<B>>,
     ln_post: nn::LayerNorm<B>,
     positional_embedding: Param<Tensor<B, 2>>,
@@ -272,11 +274,12 @@ pub struct ResidualEncoderAttentionBlockConfig {
 
 impl ResidualEncoderAttentionBlockConfig {
     pub fn init<B: Backend>(&self) -> ResidualEncoderAttentionBlock<B> {
+        let device = B::Device::default();
         let attn = MultiHeadSelfAttentionConfig::new(self.n_state, self.n_head).init();
-        let attn_ln = nn::LayerNormConfig::new(self.n_state).init();
+        let attn_ln = nn::LayerNormConfig::new(self.n_state).init(&device);
 
         let mlp = MLPConfig::new(self.n_state).init();
-        let mlp_ln = nn::LayerNormConfig::new(self.n_state).init();
+        let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(&device);
 
         ResidualEncoderAttentionBlock {
             attn,
@@ -311,14 +314,15 @@ pub struct ResidualDecoderAttentionBlockConfig {
 
 impl ResidualDecoderAttentionBlockConfig {
     pub fn init<B: Backend>(&self) -> ResidualDecoderAttentionBlock<B> {
+        let device = B::Device::default();
         let attn = MultiHeadSelfAttentionConfig::new(self.n_state, self.n_head).init();
-        let attn_ln = nn::LayerNormConfig::new(self.n_state).init();
+        let attn_ln = nn::LayerNormConfig::new(self.n_state).init(&device);
 
         let cross_attn = MultiHeadCrossAttentionConfig::new(self.n_state, self.n_head).init();
-        let cross_attn_ln = nn::LayerNormConfig::new(self.n_state).init();
+        let cross_attn_ln = nn::LayerNormConfig::new(self.n_state).init(&device);
 
         let mlp = MLPConfig::new(self.n_state).init();
-        let mlp_ln = nn::LayerNormConfig::new(self.n_state).init();
+        let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(&device);
 
         ResidualDecoderAttentionBlock {
             attn,
@@ -357,9 +361,10 @@ pub struct MLPConfig {
 
 impl MLPConfig {
     pub fn init<B: Backend>(&self) -> MLP<B> {
-        let lin1 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init();
-        let gelu = nn::GELU::new();
-        let lin2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init();
+        let device = B::Device::default();
+        let lin1 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(&device);
+        let gelu = Gelu::new();
+        let lin2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(&device);
 
         MLP { lin1, gelu, lin2 }
     }
@@ -368,7 +373,7 @@ impl MLPConfig {
 #[derive(Module, Debug)]
 pub struct MLP<B: Backend> {
     lin1: nn::Linear<B>,
-    gelu: nn::GELU,
+    gelu: Gelu,
     lin2: nn::Linear<B>,
 }
 
@@ -390,6 +395,7 @@ pub struct MultiHeadSelfAttentionConfig {
 
 impl MultiHeadSelfAttentionConfig {
     fn init<B: Backend>(&self) -> MultiHeadSelfAttention<B> {
+        let device = B::Device::default();
         assert!(
             self.n_state % self.n_head == 0,
             "State size {} must be a multiple of head size {}",
@@ -398,12 +404,12 @@ impl MultiHeadSelfAttentionConfig {
         );
 
         let n_head = self.n_head;
-        let query = nn::LinearConfig::new(self.n_state, self.n_state).init();
+        let query = nn::LinearConfig::new(self.n_state, self.n_state).init(&device);
         let key = nn::LinearConfig::new(self.n_state, self.n_state)
             .with_bias(false)
-            .init();
-        let value = nn::LinearConfig::new(self.n_state, self.n_state).init();
-        let out = nn::LinearConfig::new(self.n_state, self.n_state).init();
+            .init(&device);
+        let value = nn::LinearConfig::new(self.n_state, self.n_state).init(&device);
+        let out = nn::LinearConfig::new(self.n_state, self.n_state).init(&device);
 
         MultiHeadSelfAttention {
             n_head,
@@ -444,6 +450,7 @@ pub struct MultiHeadCrossAttentionConfig {
 
 impl MultiHeadCrossAttentionConfig {
     fn init<B: Backend>(&self) -> MultiHeadCrossAttention<B> {
+        let device = B::Device::default();
         assert!(
             self.n_state % self.n_head == 0,
             "State size {} must be a multiple of head size {}",
@@ -452,12 +459,12 @@ impl MultiHeadCrossAttentionConfig {
         );
 
         let n_head = self.n_head;
-        let query = nn::LinearConfig::new(self.n_state, self.n_state).init();
+        let query = nn::LinearConfig::new(self.n_state, self.n_state).init(&device);
         let key = nn::LinearConfig::new(self.n_state, self.n_state)
             .with_bias(false)
-            .init();
-        let value = nn::LinearConfig::new(self.n_state, self.n_state).init();
-        let out = nn::LinearConfig::new(self.n_state, self.n_state).init();
+            .init(&device);
+        let value = nn::LinearConfig::new(self.n_state, self.n_state).init(&device);
+        let out = nn::LinearConfig::new(self.n_state, self.n_state).init(&device);
 
         MultiHeadCrossAttention {
             n_head,
@@ -526,17 +533,18 @@ pub fn qkv_attention<B: Backend>(
     };
 
     // normalize value weightings
-    let w = softmax(qk, 3);
+    let w = softmax(qk, 92160);
     let o = w.matmul(v).swap_dims(1, 2).flatten(2, 3);
 
     return o;
 }
 
 pub fn attn_decoder_mask<B: Backend>(seq_length: usize) -> Tensor<B, 2> {
-    let mut mask = Tensor::<B, 2>::zeros([seq_length, seq_length]);
+    let device = B::Device::default();
+    let mut mask = Tensor::<B, 2>::zeros([seq_length, seq_length], &device);
 
     for i in 0..(seq_length - 1) {
-        let values = Tensor::<B, 2>::zeros([1, seq_length - (i + 1)]).add_scalar(NEG_INFINITY);
+        let values = Tensor::<B, 2>::zeros([1, seq_length - (i + 1)], &device).add_scalar(NEG_INFINITY);
         mask = mask.slice_assign([i..i + 1, i + 1..seq_length], values);
     }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::iter;
 
+use burn_tch::LibTorch;
 use whisper::helper::*;
 use whisper::model::*;
 use whisper::{token, token::Language};
@@ -12,7 +13,7 @@ cfg_if::cfg_if! {
     if #[cfg(feature = "wgpu-backend")] {
         use burn_wgpu::{WgpuBackend, WgpuDevice, AutoGraphicsApi};
     } else if #[cfg(feature = "torch-backend")] {
-        use burn_tch::{TchBackend, TchDevice};
+        use burn_tch::{LibTorchDevice};
     }
 }
 
@@ -64,8 +65,10 @@ fn load_whisper_model_file<B: Backend>(
     config: &WhisperConfig,
     filename: &str,
 ) -> Result<Whisper<B>, RecorderError> {
+    let device = B::Device::default();
+    println!("Loading model from file: {}", filename);
     DefaultRecorder::new()
-        .load(filename.into())
+        .load(filename.into(), &device)
         .map(|record| config.init().load_record(record))
 }
 
@@ -77,8 +80,8 @@ fn main() {
             type Backend = WgpuBackend<AutoGraphicsApi, f32, i32>;
             let device = WgpuDevice::BestAvailable;
         } else if #[cfg(feature = "torch-backend")] {
-            type Backend = TchBackend<f32>;
-            let device = TchDevice::Cuda(0);
+            type Backend = LibTorch<f32>;
+            let device = LibTorchDevice::Cuda(0);
         }
     }
 

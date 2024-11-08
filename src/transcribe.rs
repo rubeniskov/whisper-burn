@@ -1,21 +1,17 @@
 use crate::audio::{max_waveform_samples, prep_audio};
-use crate::helper::*;
 use crate::model::*;
 use crate::token::{self, *};
 use crate::beam;
 
-use num_traits::ToPrimitive;
+use burn::tensor::TensorData;
 
 use std::iter;
 
 use burn::{
-    config::Config,
     module::Module,
     tensor::{
-        self,
-        backend::{self, Backend},
-        Data, Float, Int, Tensor,
-        ElementConversion, 
+        backend::Backend,
+        Tensor,
         activation::log_softmax, 
     },
 };
@@ -50,7 +46,7 @@ pub fn waveform_to_text<B: Backend>(
         prev_normal_tokens.reverse();
         //println!("Prev tokens: {:?} {}", prev_normal_tokens, bpe.decode(&prev_normal_tokens[..], false)?);
 
-        let (new_text, new_tokens) =
+        let (_new_text, new_tokens) =
             mels_to_text(whisper, bpe, lang, mel, &prev_normal_tokens[..], padding)?;
 
         if let Some((prev_index, curr_index)) =
@@ -128,7 +124,7 @@ fn waveform_to_mel_tensor<B: Backend>(
 
         let slice = &waveform[start..end];
 
-        let waveform = Tensor::from_floats(tensor::Data::new(slice.to_vec(), [slice.len()].into()))
+        let waveform: Tensor<B, 1> = Tensor::from_floats(TensorData::from(slice), &device)
             .to_device(&device);
 
         let mels = prep_audio(waveform.unsqueeze(), sample_rate as f64);
@@ -171,7 +167,7 @@ fn mels_to_text<B: Backend>(
     let mels = Tensor::cat(
         vec![
             mels.slice([0..1, 0..n_mel, 0..(n_ctx).min(n_ctx_max_encoder - padding)]),
-            Tensor::zeros_device([1, n_mel, padding], &device),
+            Tensor::zeros([1, n_mel, padding], &device),
         ],
         2,
     );
@@ -241,14 +237,13 @@ fn mels_to_text<B: Backend>(
     };
 
     let vocab_size = bpe.vocab_size();
-    let mut special_tokens_maskout: Vec<f32> = (0..vocab_size).into_iter().map(|token| if bpe.is_special(token) {neg_infty} else {0.0}).collect();
+    let special_tokens_maskout: Vec<f32> = (0..vocab_size).into_iter().map(|token| if bpe.is_special(token) {neg_infty} else {0.0}).collect();
     //special_tokens_maskout[end_token] = 1.0;
 
-    let special_tokens_maskout = Tensor::from_data(Data::new(
-        special_tokens_maskout,
-        [vocab_size].into(),
-    ).convert())
-    .to_device(&device);
+    let special_tokens_maskout: Tensor<B, 1> = Tensor::from_data(
+            TensorData::from(special_tokens_maskout.as_slice()),
+            &device,
+        );
 
     let beamsearch_next = |beams: &[BeamNode]| {
         // convert tokens into tensor
@@ -261,13 +256,10 @@ fn mels_to_text<B: Backend>(
             })
             .collect();
 
-        let token_tensor = Tensor::from_ints(Data::from_usize(Data::new(
-            flattened_tokens,
-            [beams.len(), max_seq_len].into(),
-        )))
+        let token_tensor = Tensor::from_ints(TensorData::new(flattened_tokens.iter().map(|&x| x as i32).collect(), [beams.len(), max_seq_len]), &device)
         .to_device(&device);
 
-        let logits = whisper.forward_decoder(token_tensor, encoder_output.clone().repeat(0, beams.len()));
+        let logits = whisper.forward_decoder(token_tensor, encoder_output.clone().repeat(&[0, beams.len()]));
         let logits = if max_seq_len > 5 {
             logits
         } else {
@@ -280,15 +272,15 @@ fn mels_to_text<B: Backend>(
             let batch = i;
             let token_index = beam.seq.len() - 1;
 
-            log_probs.clone().slice([batch..batch + 1, token_index..token_index + 1]).flatten::<1>(0, 2).into_data().value
+            log_probs.clone().slice([batch..batch + 1, token_index..token_index + 1]).flatten::<1>(0, 2).into_data().into()
         });
 
         let continuations = beam_log_probs
             .zip(beams)
-            .map(|(log_probs, beam)| {
+            .map(|(log_probs, beam): (Tensor<B, 1>, &beam::BeamNode<BeamSearchToken>)| {
                 log_probs
-                    .into_iter()
-                    .map(|log_prob| log_prob.elem::<f64>())
+                    .into_data()
+                    .iter()
                     .enumerate()
                     .map(|(token_id, log_prob)| {
                         (
